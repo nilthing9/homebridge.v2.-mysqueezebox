@@ -1,14 +1,21 @@
-var request = require("request");
-var jar = request.jar();
-request = request.defaults({jar: jar, followRedirect: false, timeout: 1000});
-var Service, Characteristic;
+/**
+ * Homebridge-MySqueezebox v2 compatible
+ * Updated for Homebridge v2 and Node 18+
+ * Maintainer: nilthing9
+ */
 
-module.exports = function(homebridge) {
+const requestBase = require("request");
+const jar = requestBase.jar();
+const request = requestBase.defaults({ jar, followRedirect: false, timeout: 1000 });
+
+let Service, Characteristic;
+
+module.exports = (homebridge) => {
   Service = homebridge.hap.Service;
   Characteristic = homebridge.hap.Characteristic;
 
   homebridge.registerAccessory("homebridge-mysqueezebox", "MySqueezebox", MySqueezeboxAccessory);
-}
+};
 
 function MySqueezeboxAccessory(log, config) {
   this.log = log;
@@ -25,138 +32,130 @@ function MySqueezeboxAccessory(log, config) {
 
   this.service
     .getCharacteristic(Characteristic.On)
-    .on('get', this.getOn.bind(this))
-    .on('set', this.setOn.bind(this));
+    .onGet(this.getOn.bind(this))
+    .onSet(this.setOn.bind(this));
 
   this.service
     .getCharacteristic(Characteristic.Brightness)
-    .on('get', this.getBrightness.bind(this))
-    .on('set', this.setBrightness.bind(this));
+    .onGet(this.getBrightness.bind(this))
+    .onSet(this.setBrightness.bind(this));
 }
 
-MySqueezeboxAccessory.prototype.login = function(callback) {
+MySqueezeboxAccessory.prototype.login = function (callback) {
   if (!this.mysqueezebox) {
-      callback(null);
-      return;
+    callback(null);
+    return;
   }
 
-  // XXX cookies last for a year; don't bother trying to handle expiration
+  // Skip login if cookie already set
   if (jar.getCookieString("http://mysqueezebox.com")) {
     callback(null);
     return;
   }
 
-  request.get("http://mysqueezebox.com/user/login", {
-    form: {email: this.email, password: this.password}
-  }, function(err, response, body) {
-    if (!err) {
-      this.log.debug(jar.getCookieString("http://mysqueezebox.com"));
-      callback(null);
-    } else {
-      this.log.error("MySqueezebox error '%s'. Response: %s", err, body);
-      callback(err || new Error("Failed to log into MySqueezebox."));
-    }
-  }.bind(this));
-}
-
-MySqueezeboxAccessory.prototype.command = function(command, callback) {
-  var rpc = {id: 1, method: "slim.request", params: [this.playerid, command]};
-
-  request.post({
-    url: this.serverurl + "/jsonrpc.js",
-    json: rpc
-  }, function(err, response, body) {
-    if (!err && response.statusCode == 200 && response.headers['content-type'] == 'application/json') {
-      this.log.info("Squeezebox JSON RPC complete: " + JSON.stringify(rpc));
-      callback(null, body.result);
-    } else {
-      this.log.error("Squeezebox error '%s'. Response: %s", err, body);
-      callback(err || new Error("MySqueezebox error occurred."));
-    }
-  }.bind(this));
-}
-
-MySqueezeboxAccessory.prototype.getOn = function(callback) {
-  this.log.debug("Squeezebox on?");
-  this.login(function(status) {
-    if (status) {
-      callback(status);
-      return;
-    }
-
-    this.command(["status"], function(status, result) {
-      if (status) {
-        callback(status);
-        return;
+  request.get(
+    "http://mysqueezebox.com/user/login",
+    { form: { email: this.email, password: this.password } },
+    (err, response, body) => {
+      if (!err) {
+        this.log.debug(jar.getCookieString("http://mysqueezebox.com"));
+        callback(null);
+      } else {
+        this.log.error("MySqueezebox error '%s'. Response: %s", err, body);
+        callback(err || new Error("Failed to log into MySqueezebox."));
       }
-      if (result === null) {
-        callback(new Error("Could not get Squeezebox power status."));
-        return;
-      }
-      this.log.debug("On? " + (result.mode == "play"));
-      callback(null, (result.mode == "play") ? 1 : 0);
-    }.bind(this));
-  }.bind(this));
-}
-
-MySqueezeboxAccessory.prototype.setOn = function(on, callback) {
-  this.log.debug("Squeezebox on: " + on);
-  this.login(function(status) {
-    if (status) {
-      callback(status);
-      return;
     }
+  );
+};
 
-    var onoff = function(status) {
-      if (status) {
-        callback(status);
-        return;
+MySqueezeboxAccessory.prototype.command = function (command, callback) {
+  const rpc = { id: 1, method: "slim.request", params: [this.playerid, command] };
+
+  request.post(
+    {
+      url: this.serverurl + "/jsonrpc.js",
+      json: rpc,
+    },
+    (err, response, body) => {
+      if (!err && response.statusCode === 200 && response.headers["content-type"].includes("application/json")) {
+        this.log.info("Squeezebox JSON RPC complete: " + JSON.stringify(rpc));
+        callback(null, body.result);
+      } else {
+        this.log.error("Squeezebox error '%s'. Response: %s", err, body);
+        callback(err || new Error("MySqueezebox error occurred."));
       }
-      this.command(on ? this.oncommand : this.offcommand, callback);
-    }.bind(this);
-
-    if (on)
-      this.command(["power", "1"], onoff);
-    else
-      onoff(null);
-  }.bind(this));
-}
-
-MySqueezeboxAccessory.prototype.getBrightness = function(callback) {
-  this.log.debug("Squeezebox volume?");
-  this.login(function(status) {
-    if (status) {
-      callback(status);
-      return;
     }
+  );
+};
 
-    this.command(["mixer", "volume", "?"], function(status, result) {
-      if (status) {
-        callback(status);
-        return;
-      }
-      if (result === null) {
-        callback(new Error("Could not get Squeezebox volume."));
-        return;
-      }
-      this.log.debug("Volume is " + result._volume);
-      callback(null, parseInt(result._volume));
-    }.bind(this));
-  }.bind(this));
-}
+MySqueezeboxAccessory.prototype.getOn = async function () {
+  this.log.debug("Checking if Squeezebox is on...");
+  return new Promise((resolve, reject) => {
+    this.login((status) => {
+      if (status) return reject(status);
 
-MySqueezeboxAccessory.prototype.setBrightness = function(value, callback) {
-  this.log.debug("Squeezebox volume: " + value);
-  this.login(function(status) {
-    if (status) {
-      callback(status);
-      return;
-    }
+      this.command(["status"], (status, result) => {
+        if (status) return reject(status);
+        if (!result) return reject(new Error("Could not get Squeezebox power status."));
+        const isOn = result.mode === "play";
+        this.log.debug("Power state: " + (isOn ? "ON" : "OFF"));
+        resolve(isOn);
+      });
+    });
+  });
+};
 
-    this.command(["mixer", "volume", "" + value], callback);
-  }.bind(this));
-}
+MySqueezeboxAccessory.prototype.setOn = async function (on) {
+  this.log.debug("Setting Squeezebox on: " + on);
+  return new Promise((resolve, reject) => {
+    this.login((status) => {
+      if (status) return reject(status);
 
-MySqueezeboxAccessory.prototype.getServices = function() {
+      const onoff = (status) => {
+        if (status) return reject(status);
+        this.command(on ? this.oncommand : this.offcommand, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      };
+
+      if (on) this.command(["power", "1"], onoff);
+      else onoff(null);
+    });
+  });
+};
+
+MySqueezeboxAccessory.prototype.getBrightness = async function () {
+  this.log.debug("Getting Squeezebox volume...");
+  return new Promise((resolve, reject) => {
+    this.login((status) => {
+      if (status) return reject(status);
+
+      this.command(["mixer", "volume", "?"], (status, result) => {
+        if (status) return reject(status);
+        if (!result) return reject(new Error("Could not get Squeezebox volume."));
+        const volume = parseInt(result._volume);
+        this.log.debug("Volume is " + volume);
+        resolve(volume);
+      });
+    });
+  });
+};
+
+MySqueezeboxAccessory.prototype.setBrightness = async function (value) {
+  this.log.debug("Setting Squeezebox volume: " + value);
+  return new Promise((resolve, reject) => {
+    this.login((status) => {
+      if (status) return reject(status);
+
+      this.command(["mixer", "volume", String(value)], (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  });
+};
+
+MySqueezeboxAccessory.prototype.getServices = function () {
   return [this.service];
-}
+};
