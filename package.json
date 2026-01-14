@@ -1,0 +1,20 @@
+{
+  "name": "homebridge-mysqueezebox-v2",
+  "version": "2.0.0",
+  "description": "Improved Homebridge plugin for MySqueezebox (v2 compatible)",
+  "main": "index.js",
+  "keywords": ["homebridge-plugin", "squeezebox", "logitech", "audio"],
+  "engines": {
+    "homebridge": ">=2.0.0",
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nilthing9/homebridge.v2.-mysqueezebox.git"
+  },
+  "author": "nilthing9",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
