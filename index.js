@@ -83,7 +83,7 @@ class LMSPlatform {
       this.api.registerPlatformAccessories(
         "homebridge-mysqueezebox-v2",
         "LMSPlatform",
-        [accessory]
+        LMSPlatform
       );
 
       this.accessories.set(uuid, accessory);
