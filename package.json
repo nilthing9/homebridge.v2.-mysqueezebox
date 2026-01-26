@@ -1,5 +1,5 @@
 {
-  "name": "homebridge.v2.-mysqueezebox",
+  "name": "homebridge-mysqueezebox-v2",
   "version": "2.1.0",
   "description": "Improved Homebridge plugin for MySqueezebox (v2 compatible)",
   "main": "index.js",
