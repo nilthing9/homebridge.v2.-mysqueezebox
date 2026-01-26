@@ -7,7 +7,7 @@ module.exports = (api) => {
   Characteristic = api.hap.Characteristic;
 
   api.registerPlatform(
-    'homebridge-mysqueezebox-v2',   // must match package.json name
+    'homebridge.v2.-mysqueezebox',   // must match package.json name
     'LMSPlatform',                  // must match config.json platform
     LMSPlatform
   );
