@@ -1,0 +1,161 @@
+'use strict';
+
+const http = require('http');
+const { URL } = require('url');
+
+let Service, Characteristic, UUIDGen;
+
+module.exports = (homebridge) => {
+  Service = homebridge.hap.Service;
+  Characteristic = homebridge.hap.Characteristic;
+  UUIDGen = homebridge.hap.uuid;
+
+  homebridge.registerPlatform(
+    'homebridge-lms',
+    'LMSPlatform',
+    LMSPlatform
+  );
+};
+
+class LMSPlatform {
+  constructor(log, config, api) {
+    this.log = log;
+    this.config = config || {};
+    this.api = api;
+
+    this.accessories = new Map();
+
+    if (!this.config.server) {
+      this.log.error('No LMS server configured');
+      return;
+    }
+
+    const url = new URL(this.config.server);
+    this.lmsHost = url.hostname;
+    this.lmsPort = Number(url.port) || 9000;
+
+    this.log(`Using LMS server: ${this.lmsHost}:${this.lmsPort}`);
+
+    if (api) {
+      api.on('didFinishLaunching', () => {
+        this.pollServer();
+        this.pollInterval = setInterval(() => this.pollServer(), 5000);
+      });
+    }
+  }
+
+  configureAccessory(accessory) {
+    this.log(`Loading cached accessory: ${accessory.displayName}`);
+    this.accessories.set(accessory.context.playerid, accessory);
+  }
+
+  pollServer() {
+    this.sendLmsRequest('', ['players', 0, 999], (data) => {
+      const players = data?.result?.players_loop;
+      if (!players) return;
+
+      this.log(`Discovered ${players.length} LMS players`);
+
+      players.forEach(player => this.registerOrUpdatePlayer(player));
+    });
+  }
+
+  registerOrUpdatePlayer(player) {
+    let accessory = this.accessories.get(player.playerid);
+    const uuid = UUIDGen.generate(`lms:${player.playerid}`);
+
+    if (!accessory) {
+      this.log(`Creating accessory for ${player.name}`);
+
+      accessory = new this.api.platformAccessory(player.name, uuid);
+      accessory.context.playerid = player.playerid;
+
+      accessory.addService(Service.Lightbulb, player.name);
+
+      this.api.registerPlatformAccessories(
+        'homebridge-lms',
+        'LMSPlatform',
+        [accessory]
+      );
+
+      this.accessories.set(player.playerid, accessory);
+    }
+
+    this.setupLightbulb(accessory, player);
+  }
+
+  setupLightbulb(accessory, player) {
+    const service = accessory.getService(Service.Lightbulb);
+
+    // Power = Play / Pause
+    service.getCharacteristic(Characteristic.On)
+      .onSet(value => {
+        this.sendLmsRequest(
+          player.playerid,
+          [value ? 'play' : 'pause']
+        );
+      })
+      .updateValue(player.power === 1);
+
+    // Brightness = Volume
+    service.getCharacteristic(Characteristic.Brightness)
+      .onSet(value => {
+        this.sendLmsRequest(
+          player.playerid,
+          ['mixer', 'volume', value]
+        );
+      });
+
+    // Poll status
+    this.sendLmsRequest(player.playerid, ['status', '-', 1], (status) => {
+      const s = status?.result;
+      if (!s) return;
+
+      if (typeof s.power === 'number') {
+        service.getCharacteristic(Characteristic.On)
+          .updateValue(s.power === 1);
+      }
+
+      if (typeof s.mixer?.volume === 'number') {
+        service.getCharacteristic(Characteristic.Brightness)
+          .updateValue(s.mixer.volume);
+      }
+    });
+  }
+
+  sendLmsRequest(playerid, commandArray, callback) {
+    const payload = JSON.stringify({
+      id: 1,
+      method: 'slim.request',
+      params: [playerid, commandArray]
+    });
+
+    const req = http.request({
+      host: this.lmsHost,
+      port: this.lmsPort,
+      method: 'POST',
+      path: '/jsonrpc.js',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    }, res => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          callback && callback(JSON.parse(body));
+        } catch (e) {
+          this.log.error('Invalid JSON from LMS');
+        }
+      });
+    });
+
+    req.on('error', err => {
+      this.log.error('Error connecting to LMS:', err.message);
+    });
+
+    req.write(payload);
+    req.end();
+  }
+}

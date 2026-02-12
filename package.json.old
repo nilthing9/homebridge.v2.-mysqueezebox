@@ -1,6 +1,6 @@
 {
   "name": "homebridge-lms",
-  "version": "0.1.0",
+  "id": "homebridge-lms",
   "description": "Homebridge plugin for Lyrion Music Server (LMS / Logitech Media Server)",
   "main": "index.js",
   "keywords": [
@@ -13,8 +13,8 @@
     "audio"
   ],
   "engines": {
-    "homebridge": ">=1.6.0",
-    "node": ">=18.0.0"
+    "homebridge": ">=2.0.0-beta.55",
+    "node": ">=20.0.0"
   },
   "repository": {
     "type": "git",

@@ -1,0 +1,28 @@
+{
+  "platforms": [
+    {
+      "platform": "LMSPlatform",
+      "name": "Lyrion Music Server",
+      "fields": [
+        {
+          "title": "Auto Discover",
+          "key": "autodiscover",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "title": "LMS Server URL",
+          "key": "server",
+          "type": "string",
+          "placeholder": "http://192.168.0.25:9000"
+        },
+        {
+          "title": "Debug Logging",
+          "key": "debug",
+          "type": "boolean",
+          "default": false
+        }
+      ]
+    }
+  ]
+}

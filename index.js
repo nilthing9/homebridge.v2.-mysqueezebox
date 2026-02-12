@@ -1,9 +1,21 @@
 'use strict';
 
-const dgram = require('dgram');
-const os = require('os');
+const axios = require('axios');
 
-let Accessory, Service, Characteristic, UUIDGen;
+let Service, Characteristic, UUIDGen, Categories;
+
+module.exports = (api) => {
+  Service = api.hap.Service;
+  Characteristic = api.hap.Characteristic;
+  UUIDGen = api.hap.uuid;
+  Categories = api.hap.Categories;
+
+  api.registerPlatform(
+    'homebridge-lms',
+    'LMSPlatform',
+    LMSPlatform
+  );
+};
 
 class LMSPlatform {
   constructor(log, config, api) {
@@ -11,86 +23,203 @@ class LMSPlatform {
     this.config = config || {};
     this.api = api;
 
-    this.name = this.config.name || 'Lyrion Music Server';
-    this.autoDiscover = this.config.autoDiscover !== false; // default true
-    this.lmsHost = this.config.lmsHost || null;
-    this.lmsPort = this.config.lmsPort || 9000;
-    this.debug = this.config.debug || false;
+    this.host = config.host || '192.168.0.25';
+    this.port = config.port || 9000;
+    this.baseUrl = `http://${this.host}:${this.port}`;
 
-    this.players = [];
+    this.pollInterval = config.pollInterval || 15000;
 
-    this.log.info('LMSPlatform initialising...');
-    this.log.info(`AutoDiscover: ${this.autoDiscover}`);
-    if (this.lmsHost) this.log.info(`Configured LMS Host: ${this.lmsHost}:${this.lmsPort}`);
+    // Map<playerid, accessory>
+    this.accessories = new Map();
+    this.statusTimers = new Map();
 
-    if (api) {
-      this.api.on('didFinishLaunching', () => {
-        this.log.info('Homebridge finished launching');
+    this.log(`LMS Platform initialised at ${this.baseUrl}`);
 
-        if (this.autoDiscover) {
-          this.discoverLMS();
-        } else if (this.lmsHost) {
-          this.connectToLMS(this.lmsHost, this.lmsPort);
-        } else {
-          this.log.error('No LMS host configured and autoDiscover disabled');
-        }
-      });
+    api.on('didFinishLaunching', () => {
+      this.log('LMS Platform finished launching');
+      this.discoverPlayers();
+      this.pollTimer = setInterval(
+        () => this.discoverPlayers(),
+        this.pollInterval
+      );
+    });
+  }
+
+  /* ---------- Cached accessories ---------- */
+  configureAccessory(accessory) {
+    let playerid = accessory.context?.playerid;
+    if (!playerid) {
+      this.log.warn(`Cached accessory ${accessory.displayName} missing playerid`);
+      return;
+    }
+
+    playerid = playerid.toLowerCase().trim();
+    accessory.context.playerid = playerid;
+
+    this.log(`Loaded cached accessory: ${accessory.displayName}`);
+    this.accessories.set(playerid, accessory);
+
+    this.setupAccessory(accessory);
+  }
+
+  /* ---------- Discovery ---------- */
+  async discoverPlayers() {
+    try {
+      const data = await this.lmsRequest('', ['players', 0, 50]);
+      const players = data?.result?.players_loop || [];
+
+      this.log.debug(`Discovered ${players.length} LMS player(s)`);
+
+      for (const player of players) {
+        if (!player.playerid || !player.name) continue;
+        this.ensureAccessory(player);
+      }
+    } catch (err) {
+      this.log.error(`Failed to discover players: ${err.message}`);
     }
   }
 
-  configureAccessory(accessory) {
-    // cached accessories restore
-    this.log.info(`Restoring cached accessory: ${accessory.displayName}`);
+  ensureAccessory(player) {
+    const playerid = player.playerid.toLowerCase().trim();
+
+    // THIS is the critical guard
+    if (this.accessories.has(playerid)) {
+      return;
+    }
+
+    const uuid = UUIDGen.generate(`homebridge-lms:${playerid}`);
+    this.log(`Registering new accessory for ${player.name}`);
+
+    const accessory = new this.api.platformAccessory(player.name, uuid);
+    accessory.context.playerid = playerid;
+    accessory.category = Categories.FAN;
+
+    this.accessories.set(playerid, accessory);
+    this.setupAccessory(accessory);
+
+    this.api.registerPlatformAccessories(
+      'homebridge-lms',
+      'LMSPlatform',
+      [accessory]
+    );
   }
 
-  discoverLMS() {
-    this.log.info('Starting LMS auto-discovery...');
+  /* ---------- Accessory setup ---------- */
+  setupAccessory(accessory) {
+    const playerid = accessory.context.playerid;
 
-    const socket = dgram.createSocket('udp4');
-    socket.bind(3483, () => {
-      socket.setBroadcast(true);
-      const message = Buffer.from('eIPAD\0NAME\0JSON\0VERS\01.0\0');
-      socket.send(message, 0, message.length, 3483, '255.255.255.255');
-    });
+    /* Accessory Information */
+    let infoService = accessory.getService(Service.AccessoryInformation);
+    if (!infoService) {
+      infoService = accessory.addService(Service.AccessoryInformation);
+    }
 
-    socket.on('message', (msg, rinfo) => {
-      const data = msg.toString();
-      if (this.debug) this.log.info(`Discovery response from ${rinfo.address}: ${data}`);
+    infoService
+      .setCharacteristic(Characteristic.Manufacturer, 'Logitech')
+      .setCharacteristic(Characteristic.Model, 'Squeezebox / LMS')
+      .setCharacteristic(Characteristic.SerialNumber, playerid)
+      .setCharacteristic(Characteristic.FirmwareRevision, '1.0.0');
 
-      if (!this.lmsHost) {
-        this.lmsHost = rinfo.address;
-        this.log.info(`Discovered LMS at ${this.lmsHost}:${this.lmsPort}`);
-        this.connectToLMS(this.lmsHost, this.lmsPort);
-      }
-    });
+    /* Fanv2 Service */
+    let fanService = accessory.getService(Service.Fanv2);
+    if (!fanService) {
+      fanService = accessory.addService(Service.Fanv2, accessory.displayName);
+    }
 
-    setTimeout(() => {
-      socket.close();
-      if (!this.lmsHost) {
-        this.log.error('No LMS servers discovered');
+    /* Active → Play / Pause */
+    fanService.getCharacteristic(Characteristic.Active)
+      .onGet(async () => {
+        try {
+          const data = await this.lmsRequest(playerid, ['mode', '?']);
+          return data?.result?._mode === 'play'
+            ? Characteristic.Active.ACTIVE
+            : Characteristic.Active.INACTIVE;
+        } catch {
+          return Characteristic.Active.INACTIVE;
+        }
+      })
+      .onSet(async (value) => {
+        try {
+          await this.lmsRequest(
+            playerid,
+            [value === Characteristic.Active.ACTIVE ? 'play' : 'pause']
+          );
+        } catch {}
+      });
+
+    /* RotationSpeed → Volume */
+    fanService.getCharacteristic(Characteristic.RotationSpeed)
+      .setProps({ minValue: 0, maxValue: 100, minStep: 1 })
+      .onGet(async () => {
+        try {
+          const data = await this.lmsRequest(playerid, ['mixer', 'volume', '?']);
+          return parseInt(data?.result?._volume) || 0;
+        } catch {
+          return 0;
+        }
+      })
+      .onSet(async (value) => {
+        try {
+          await this.lmsRequest(
+            playerid,
+            ['mixer', 'volume', Math.round(value)]
+          );
+        } catch {}
+      });
+
+    this.startPolling(accessory);
+  }
+
+  /* ---------- Status polling ---------- */
+  startPolling(accessory) {
+    const playerid = accessory.context.playerid;
+
+    if (this.statusTimers.has(playerid)) {
+      clearInterval(this.statusTimers.get(playerid));
+    }
+
+    const fanService = accessory.getService(Service.Fanv2);
+    if (!fanService) return;
+
+    const timer = setInterval(async () => {
+      try {
+        const data = await this.lmsRequest(playerid, ['status', '-', 1]);
+        const result = data?.result;
+        if (!result) return;
+
+        fanService.getCharacteristic(Characteristic.Active)
+          .updateValue(
+            result.mode === 'play'
+              ? Characteristic.Active.ACTIVE
+              : Characteristic.Active.INACTIVE
+          );
+
+        if (result['mixer volume'] !== undefined) {
+          fanService.getCharacteristic(Characteristic.RotationSpeed)
+            .updateValue(parseInt(result['mixer volume']));
+        }
+      } catch {
+        // never break Homebridge
       }
     }, 5000);
+
+    this.statusTimers.set(playerid, timer);
   }
 
-  connectToLMS(host, port) {
-    this.log.info(`Connecting to LMS at ${host}:${port}`);
-    // next stage: JSON-RPC handshake + player enumeration
-  }
+  /* ---------- LMS RPC ---------- */
+  async lmsRequest(playerid, command) {
+    const payload = {
+      id: 1,
+      method: 'slim.request',
+      params: [playerid, command]
+    };
 
-  discoverDevices() {
-    return [];
+    const response = await axios.post(
+      `${this.baseUrl}/jsonrpc.js`,
+      payload,
+      { timeout: 5000 }
+    );
+
+    return response.data;
   }
 }
-
-module.exports = (api) => {
-  Accessory = api.platformAccessory;
-  Service = api.hap.Service;
-  Characteristic = api.hap.Characteristic;
-  UUIDGen = api.hap.uuid;
-
-  api.registerPlatform(
-    'homebridge.v2.-mysqueezebox',  // MUST match package.json "name"
-    'LMSPlatform',                 // MUST match config.json "platform"
-    LMSPlatform
-  );
-};
