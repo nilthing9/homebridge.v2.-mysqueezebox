@@ -263,8 +263,9 @@ class LMSPlayerAccessory {
     this._playing = mode === "play";
     this._paused = mode === "pause";
 
-    if (status.mixer_volume !== undefined) {
-      const vol = parseInt(status.mixer_volume);
+    const rawVol = status["mixer volume"] ?? status.mixer_volume;
+    if (rawVol !== undefined) {
+      const vol = parseInt(rawVol);
       this._volume = Math.max(0, Math.min(100, isNaN(vol) ? 0 : vol));
     }
 
